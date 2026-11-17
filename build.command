@@ -83,7 +83,9 @@ if ! gh auth status --hostname github.com >/dev/null 2>&1; then
 fi
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail '脚本必须放在 captain-cabin 仓库根目录。'
-remote=$(git remote get-url origin)
+# Follow origin's push destination so changing the Git remote also changes the
+# workflow, status queries and artifact downloads. Do not hard-code an owner.
+remote=$(git remote get-url --push origin)
 case "$remote" in
   https://github.com/*) repo=${remote#https://github.com/} ;;
   http://github.com/*) repo=${remote#http://github.com/} ;;
@@ -91,9 +93,12 @@ case "$remote" in
   ssh://git@github.com/*) repo=${remote#ssh://git@github.com/} ;;
   *) fail "origin 不是可识别的 GitHub 地址：$remote" ;;
 esac
-repo=${repo%.git}
 repo=${repo%/}
+repo=${repo%.git}
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail '无法识别 GitHub 仓库名称。'
+repo_url="https://github.com/$repo"
+echo "origin 推送地址：$remote"
+echo "本次构建仓库：$repo_url"
 
 if [ -z "$RESUME_RUN" ]; then
 branch=$(git symbolic-ref --quiet --short HEAD) || fail '当前处于 detached HEAD，请先切换到默认分支。'
@@ -119,7 +124,7 @@ fi
 github_git() {
   git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' "$@"
 }
-push_url="https://github.com/$repo.git"
+push_url="$repo_url.git"
 github_git fetch "$push_url" "$branch"
 git merge-base --is-ancestor FETCH_HEAD HEAD || fail '远端有本地尚未包含的提交，请先执行 git pull --ff-only 后重试。'
 
@@ -142,7 +147,7 @@ for ((attempt=0; attempt<24; attempt++)); do
   fi
   sleep 5
 done
-[ "$available" -eq 1 ] || fail "workflow 暂未可用，请查看 https://github.com/$repo/actions，启用 Actions 后重新运行脚本。"
+[ "$available" -eq 1 ] || fail "workflow 暂未可用，请查看 $repo_url/actions，启用 Actions 后重新运行脚本。"
 
 request_id="mac-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 gh workflow run "$workflow" --repo "$repo" --ref "$branch" --raw-field "request_id=$request_id"
@@ -157,14 +162,14 @@ for ((attempt=0; attempt<36; attempt++)); do
   fi
   sleep 5
 done
-[ -n "$run_id" ] || fail "未找到本次运行，请查看 https://github.com/$repo/actions。请勿连续重复触发。"
-run_url="https://github.com/$repo/actions/runs/$run_id"
+[ -n "$run_id" ] || fail "未找到本次运行，请查看 $repo_url/actions。请勿连续重复触发。"
+run_url="$repo_url/actions/runs/$run_id"
 echo "运行页面：$run_url"
 run_sha=$(gh_retry run view "$run_id" --repo "$repo" --json headSha --jq '.headSha')
 [ "$run_sha" = "$commit" ] || fail '触发时远端分支发生变化，本次运行的提交与本地不同，请检查运行页面。'
 else
   run_id=$RESUME_RUN
-  run_url="https://github.com/$repo/actions/runs/$run_id"
+  run_url="$repo_url/actions/runs/$run_id"
   gh_retry run view "$run_id" --repo "$repo" --json databaseId --jq '.databaseId' >/dev/null
   echo "继续已有任务：$run_url"
 fi
