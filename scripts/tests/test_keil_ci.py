@@ -3,6 +3,7 @@
 import configparser
 import importlib.util
 import io
+import json
 from contextlib import redirect_stdout
 from pathlib import Path
 import struct
@@ -40,7 +41,9 @@ class KeilCITests(unittest.TestCase):
             with patch.object(ci, "run_logged", side_effect=RuntimeError("exit code 2")), \
                     self.assertRaisesRegex(RuntimeError, "Keil L6050U"):
                 ci.build(Path(temp), Path(temp), logs)
-            self.assertIn("237820", (logs / "failure.json").read_text())
+            failure = json.loads((logs / "failure.json").read_text(encoding="utf-8"))
+            self.assertEqual(failure["code_size_bytes"], 237820)
+            self.assertIn("授权容量限制", failure["reason_zh"])
             self.assertIn("GCC", (logs / "failure.txt").read_text(encoding="utf-8"))
 
     def test_floating_license_configuration_requires_real_server_address(self):

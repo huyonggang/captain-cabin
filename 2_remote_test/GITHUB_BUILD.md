@@ -4,7 +4,19 @@
 仓库中未发现 Keil 授权信息；流程默认使用未激活的评估环境，可配置已有的有效 FlexNet 授权。
 因此首次构建可能因 32KB 评估限制、授权、安装或源码问题失败，失败日志仍会上传。
 
-## 最新失败原因：Keil 授权容量限制
+## 测试副本中的 Windows 编码错误
+
+当前测试副本位于 `/Users/huyg/Downloads/captain-cabin`。
+运行 [44052153345](https://github.com/huyonggang/captain-cabin/actions/runs/44052153345)
+在辅助脚本回归测试阶段失败，尚未部署 Keil 或编译固件。
+原因是 `failure.json` 按 UTF-8 写入中文，测试读取时没有指定编码，Windows Python 3.12
+默认使用 CP1252，导致 `UnicodeDecodeError`。已将测试读取显式设为 UTF-8，并校验中文原因字段；
+workflow 同时启用 Python UTF-8 文件/输出模式。
+
+这项修复仅处理测试脚本的编码兼容性。当前 workflow 仍配置为 `windows-2022`，
+尚未切换到已授权 Windows 电脑的自托管 runner，原有 Keil 评估版容量限制仍需单独解决。
+
+## 此前失败原因：Keil 授权容量限制
 
 运行 [44043719956](https://github.com/taogan1985-cmd/captain-cabin/actions/runs/44043719956)
 已经成功部署工具链并完成源文件编译，在链接阶段报错：
@@ -55,7 +67,7 @@ GitHub 托管 Windows 只提供计算环境，不包含 Keil 商业授权。
 双击仓库根目录的 `build.command`，或在终端执行：
 
 ```bash
-bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command"
+bash "/Users/huyg/Downloads/captain-cabin/build.command"
 ```
 
 脚本自动检查 GitHub CLI 与登录状态，将编译配置和遥控器源码的修改提交并推送到
@@ -72,7 +84,7 @@ Homebrew 时会安装 GitHub CLI。不会自动安装 Homebrew。
 继续等待和下载已有任务（将数字替换为运行页面末尾的运行 ID）：
 
 ```bash
-bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command" --resume 44038921177
+bash "/Users/huyg/Downloads/captain-cabin/build.command" --resume 44038921177
 ```
 
 `--resume` 不提交、不推送、不触发新任务；也可用于补下已完成任务的附件。
@@ -81,7 +93,7 @@ bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command" --resume
 只检查环境、不上传或编译：
 
 ```bash
-bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command" --check
+bash "/Users/huyg/Downloads/captain-cabin/build.command" --check
 ```
 
 ## 上传和运行
@@ -132,7 +144,7 @@ bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command" --check
 更新后执行正常构建命令，脚本会提交并推送新的 workflow、部署助手及测试，并启动新任务：
 
 ```bash
-bash "/Users/huyg/Project/rippton/embedded/captain-cabin/build.command"
+bash "/Users/huyg/Downloads/captain-cabin/build.command"
 ```
 
 不要用旧任务的 **Re-run jobs** 测试此修复；旧任务仍对应旧提交。

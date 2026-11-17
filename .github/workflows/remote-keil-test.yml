@@ -20,6 +20,8 @@ jobs:
       run:
         shell: pwsh
     env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
       KEIL_ROOT: C:\Keil_v5
       REMOTE_ROOT: 2_remote_test/rc_endu_test
       CMSIS_PACK_ROOT: C:\Keil_v5\ARM\PACK
