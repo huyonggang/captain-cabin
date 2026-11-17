@@ -1,0 +1,7 @@
+Rogue Max ENDU TEST v0.3b（测试固件，禁止量产）
+- 去掉了船端 Wi-Fi：= 生产固件 + ENDU 模式，app 1,011,696 B（生产约 1.01 MB）；分区表与生产版一致；bootloader 用 out_orig 生产版
+- App 识别：USB(chan0) 任意 sysid；遥控器链路(chan1) 只认 sysid = ET_APP_SYSID(默认 200)。遥控器自己(255)只能上锁
+烧录（esptool 4.x，<PORT> 换 COM 口，不要 erase all）：
+A（推荐，只写 app）：esptool.py --chip esp32 --port <PORT> --baud 921600 write_flash 0xf000 ota_data_initial.bin 0x20000 RogueMax_ENDU_TEST_v0.3b_app_0x20000.bin
+B（整包 0x0，esptool merge_bin 生成）：esptool.py --chip esp32 --port <PORT> --baud 921600 write_flash 0x0 RogueMax_ENDU_TEST_v0.3b_merged_0x0.bin
+仍长鸣/不启动：接 UART0 115200 抓开机日志发回。刷回原厂：用你们自己的原版固件。

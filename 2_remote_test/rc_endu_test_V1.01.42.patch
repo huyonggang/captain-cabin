@@ -1,0 +1,61 @@
+diff -ru /workspace/rc_patched/Drivers/BSP/interface/config_param.h ./Drivers/BSP/interface/config_param.h
+--- /workspace/rc_patched/Drivers/BSP/interface/config_param.h	2026-11-17 04:26:32.761903522 +0800
++++ ./Drivers/BSP/interface/config_param.h	2026-11-17 11:30:25.229421954 +0800
+@@ -21,6 +21,12 @@
+ 
+ /* 默认配置参数 */
+ #define SoftwareVERSION 10142 /*软件版本 表示版本为 V1.01.42*/
++/* ===== ENDU TEST BUILD (Rogue Max motor endurance test, NOT for mass production) =====
++ * Based on V1.01.42 source (controlled release is 1.01.43). SoftwareVERSION is left at 10142 so the
++ * official App / OTA logic sees the same number; the screen shows "-ENDU-TEST".
++ * The phone ENDU test App talks to the boat with MAVLink sysid ENDU_APP_SYSID through this remote. */
++#define ENDU_TEST_BUILD 1
++#define ENDU_APP_SYSID  200   /* must equal boat param ET_APP_SYSID */
+ #define HardwareVERSION 10101 /*硬件版本 表示版本为 V1.01.01*/
+ #define DISPLAY_LANGUAGE SIMPLE_CHINESE
+ 
+diff -ru /workspace/rc_patched/Drivers/BSP/src/menu.c ./Drivers/BSP/src/menu.c
+--- /workspace/rc_patched/Drivers/BSP/src/menu.c	2026-11-17 04:26:32.745903363 +0800
++++ ./Drivers/BSP/src/menu.c	2026-11-17 11:30:25.229421954 +0800
+@@ -1588,7 +1588,11 @@
+     /* 软件版本 */
+     label = lv_label_create(globeGUI.screen);
+     lv_obj_set_style_text_font(label, &font_blod_16, LV_STATE_DEFAULT);
++#ifdef ENDU_TEST_BUILD
++    sprintf(string, "V%d.%02d.%02d-ENDU-TEST", SoftwareVERSION / 10000, SoftwareVERSION % 10000 / 100, SoftwareVERSION % 100);
++#else
+     sprintf(string, "V%d.%02d.%02d", SoftwareVERSION / 10000, SoftwareVERSION % 10000 / 100, SoftwareVERSION % 100);
++#endif
+     strcpy(show_string, VersionLanguage[0][configParam.language]);
+     strcat(show_string, string);
+     lv_label_set_text(label, (const char *)show_string);                                      // 显示文字
+diff -ru /workspace/rc_patched/Middlewares/MAVLINK/mavlink.c ./Middlewares/MAVLINK/mavlink.c
+--- /workspace/rc_patched/Middlewares/MAVLINK/mavlink.c	2026-11-17 04:27:25.882172411 +0800
++++ ./Middlewares/MAVLINK/mavlink.c	2026-11-17 11:30:25.229421954 +0800
+@@ -1761,6 +1761,11 @@
+                     {
+                         globeState.BoatVersion = Unknown_Boat;
+                     }
++#ifdef ENDU_TEST_BUILD
++                    /* ENDU test: ACKs for the App's MAV_CMD_USER_1/2 (31010/31011) are only for the App */
++                    if (!(msg.msgid == MAVLINK_MSG_ID_COMMAND_ACK &&
++                          (mavlink_msg_command_ack_get_command(&msg) == 31010 || mavlink_msg_command_ack_get_command(&msg) == 31011)))
++#endif
+                     parse_boat_mavlink_messages(&msg);
+                     Debug("msgid: %d", msg.msgid);
+                 }
+@@ -2725,6 +2730,14 @@
+                         parse_app_mavlink_messages(&msg);
+                     }
+                     break;
++#ifdef ENDU_TEST_BUILD
++                    case ENDU_APP_SYSID: /* ENDU test App: PARAM_SET/REQUEST_READ, COMMAND_LONG (USER_1/USER_2 RT throttle, DO_SET_MODE), HEARTBEAT -> boat, byte-for-byte */
++                    {
++                        Rf_Uart_Send((uint8_t *)(&msg.magic), MAVLINK_NUM_HEADER_BYTES + MAVLINK_NUM_CHECKSUM_BYTES + msg.len);
++                        globeState.WiFiConnect = 1;
++                    }
++                    break;
++#endif
+                     default:
+                     {
+                         Rf_Uart_Send((uint8_t *)(&msg.magic), MAVLINK_NUM_HEADER_BYTES + MAVLINK_NUM_CHECKSUM_BYTES + msg.len); // 这里是解析成功之后再转发给船

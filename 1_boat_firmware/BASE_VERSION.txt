@@ -1,0 +1,6 @@
+Base: ArduRover 4.2.3, Rogue Max production tree (catchx_main build_orig ardupilot_4.2.3), git HEAD 4a58f3e0c92437a33cf8d4bd470f6a532c7b3745 (2026-10-07 20:47 +0800)
+Board: esp32catchx_rogue_max, ESP-IDF v4.2.4-46, xtensa esp-2020r3. hwdef identical to production (no boat Wi-Fi in v0.3b).
+Apply: cd ardupilot && git apply endu_test_mode_v0.3b.patch   (Rover/ only; 11 files listed in modified_files/)
+Build: ./waf configure --board esp32catchx_rogue_max && ./waf rover
+Merged image: esptool.py --chip esp32 merge_bin --flash_mode keep --flash_freq keep --flash_size keep -o merged.bin 0x1000 bootloader_production.bin 0xa000 partition-table.bin 0xf000 ota_data_initial.bin 0x20000 ardupilot.bin
+TEST FIRMWARE ONLY - NOT FOR MASS PRODUCTION.

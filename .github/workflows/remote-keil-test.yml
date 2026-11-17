@@ -1,0 +1,102 @@
+name: Remote firmware - Keil build test
+run-name: Remote firmware ${{ inputs.request_id || 'manual' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Identifier used by the Mac launcher to find this exact run
+        required: false
+        default: manual
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      KEIL_ROOT: C:\Keil_v5
+      REMOTE_ROOT: 2_remote_test/rc_endu_test
+      CMSIS_PACK_ROOT: C:\Keil_v5\ARM\PACK
+      KEIL_LICENSE_SERVER: ${{ secrets.KEIL_LICENSE_SERVER }}
+      KEIL_LICENSE_VARIANT: ${{ vars.KEIL_LICENSE_VARIANT || 'mdk_pro' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Prepare isolated CI project
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          python scripts/prepare_remote_ci.py 2>&1 | Tee-Object ci-logs/prepare.log
+          if ($LASTEXITCODE -ne 0) { throw 'CI project preparation failed.' }
+
+      - name: Check CI deployment and timeout helpers
+        run: |
+          python -B -m unittest discover -s scripts/tests -v 2>&1 | Tee-Object ci-logs/helper-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'CI helper regression tests failed.' }
+
+      - name: Deploy Keil tools without GUI installer
+        timeout-minutes: 20
+        run: |
+          python -u scripts/keil_ci.py setup
+          if ($LASTEXITCODE -ne 0) { throw 'Keil deployment failed; inspect ci-logs/setup.log and compiler-probe.log.' }
+
+      - name: Rebuild firmware with bounded process monitoring
+        timeout-minutes: 10
+        run: |
+          python -u scripts/keil_ci.py build
+          if ($LASTEXITCODE -ne 0) { throw 'Keil build failed; inspect ci-logs/build.log and keil-build.log.' }
+
+      - name: Upload application firmware
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: remote-firmware-app
+          path: |
+            2_remote_test/rc_endu_test/Output/BIN/*ENDU_TEST*.bin
+            2_remote_test/rc_endu_test/Output/apm32f407.hex
+            ci-logs/firmware-sha256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Redact license server details from diagnostic artifacts
+        id: redact_diagnostics
+        if: always()
+        run: |
+          python -u scripts/keil_ci.py redact
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic redaction failed.' }
+
+      - name: Upload diagnostics even on failure
+        if: always() && steps.redact_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: remote-keil-diagnostics
+          path: |
+            ci-logs/
+            2_remote_test/rc_endu_test/Output/*.map
+            2_remote_test/rc_endu_test/Output/*.htm
+            2_remote_test/rc_endu_test/Output/*.build_log.htm
+            2_remote_test/rc_endu_test/Projects/MDK-ARM/CatchXBlack_Pro.ci.uvprojx
+          retention-days: 14
+
+      - name: Write run summary
+        if: always()
+        run: |
+          @'
+          ### Remote firmware build test
+          - Tools are extracted from the official, SHA256-verified archive; no GUI installer is launched.
+          - Compatibility build: Keil MDK 5.25 / ARM Compiler 5.06 update 6 build 750.
+          - Original project requests update 5 build 528; this is not an exact-toolchain reproduction.
+          - Uses KEIL_LICENSE_SERVER if configured; otherwise MDK-Lite evaluation limits apply.
+          - Download `remote-keil-diagnostics` on failure; inspect setup.log or keil-build.log.
+          - `remote-firmware-app` is uploaded only after a successful build and BIN validation.
+          - Application BIN base: 0x08010000. Bootloader is not included.
+          - This build has not been validated on a remote controller.
+          '@ | Add-Content $env:GITHUB_STEP_SUMMARY

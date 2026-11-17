@@ -1,0 +1,387 @@
+diff --git a/Rover/GCS_Mavlink.cpp b/Rover/GCS_Mavlink.cpp
+index 48f4767b71..8b4254cf55 100644
+--- a/Rover/GCS_Mavlink.cpp
++++ b/Rover/GCS_Mavlink.cpp
+@@ -6,7 +6,9 @@
+ 
+ #include <AP_BattMonitor/AP_BattMonitor.h>
+ 
++#if CONFIG_HAL_BOARD == HAL_BOARD_ESP32
+ #include <AP_HAL_ESP32/utils/serial_ota.h>
++#endif
+ 
+ MAV_TYPE GCS_Rover::frame_type() const
+ {
+@@ -681,7 +683,35 @@ MAV_RESULT GCS_MAVLINK_Rover::handle_command_long_packet(const mavlink_command_l
+         return MAV_RESULT_ACCEPTED;
+     }
+ 
++    // TEST-ONLY: motor endurance test control
++    // MAV_CMD_USER_1: param1 action (0=stop+disarm,1=start auto,2=pause,3=resume,4=enter realtime), param2 1=reset counters
++    case MAV_CMD_USER_1:
++        if (!rover.mode_endurance.from_app()) {
++            rover.mode_endurance.deny_text("test command");
++            return MAV_RESULT_DENIED;
++        }
++        return rover.mode_endurance.handle_control((uint8_t)packet.param1, is_equal(packet.param2, 1.0f));
++    // MAV_CMD_USER_2: realtime keep-alive + targets. param1 left %, param2 right % (-100..100), param3 hold ms (0=ET_RT_TMO)
++    case MAV_CMD_USER_2:
++        if (!rover.mode_endurance.from_app()) {
++            rover.mode_endurance.deny_text("realtime command");
++            return MAV_RESULT_DENIED;
++        }
++        return rover.mode_endurance.handle_realtime(packet.param1, packet.param2, packet.param3);
++
++    // TEST-ONLY (ENDU v0.3): in ENDU the remote may DISARM (safety) but not arm
++    case MAV_CMD_COMPONENT_ARM_DISARM:
++        if (rover.control_mode == &rover.mode_endurance && !rover.mode_endurance.from_app() && is_equal(packet.param1, 1.0f)) {
++            rover.mode_endurance.deny_text("arm");
++            return MAV_RESULT_DENIED;
++        }
++        return GCS_MAVLINK::handle_command_long_packet(packet);
++
+     case MAV_CMD_DO_MOTOR_TEST:
++        if (rover.control_mode == &rover.mode_endurance && !rover.mode_endurance.from_app()) {
++            rover.mode_endurance.deny_text("motor test");
++            return MAV_RESULT_DENIED;
++        }
+         // param1 : motor sequence number (a number from 1 to max number of motors on the vehicle)
+         // param2 : throttle type (0=throttle percentage, 1=PWM, 2=pilot throttle channel pass-through. See MOTOR_TEST_THROTTLE_TYPE enum)
+         // param3 : throttle (range depends upon param2)
+@@ -808,6 +838,12 @@ void GCS_MAVLINK_Rover::send_global_position_int()
+ 
+ void GCS_MAVLINK_Rover::handleMessage(const mavlink_message_t &msg)
+ {
++    // TEST-ONLY (ENDU v0.3): remember which link this message came from, so ENDU can tell App from remote
++    struct EnduChanGuard {
++        EnduChanGuard(int8_t c, uint8_t s) { rover.mode_endurance.set_msg_src(c, s); }
++        ~EnduChanGuard() { rover.mode_endurance.set_msg_src(-1, 0); }
++    } endu_chan_guard((int8_t)chan, msg.sysid);
++
+     switch (msg.msgid) {
+ 
+     case MAVLINK_MSG_ID_LOG_DATA:
+diff --git a/Rover/Parameters.cpp b/Rover/Parameters.cpp
+index de8ab5764b..285991acf8 100644
+--- a/Rover/Parameters.cpp
++++ b/Rover/Parameters.cpp
+@@ -900,6 +900,91 @@ const AP_Param::GroupInfo ParametersG3::var_info[] = {
+     // @User: Standard
+     AP_GROUPINFO("LED_STRIP_COLOR", 10, ParametersG3, led_strip_color, 0x00FFFF),
+ 
++    // ---------------- TEST-ONLY: motor endurance test (mode 30 ENDU) ----------------
++    // @Param: ET_FWD_S
++    // @DisplayName: Endurance forward run time
++    // @Units: s
++    AP_GROUPINFO("ET_FWD_S", 20, ParametersG3, et_fwd_s, 1800),
++    // @Param: ET_STOP_S
++    // @DisplayName: Endurance stop time between directions
++    // @Units: s
++    AP_GROUPINFO("ET_STOP_S", 21, ParametersG3, et_stop_s, 300),
++    // @Param: ET_REV_S
++    // @DisplayName: Endurance reverse run time
++    // @Units: s
++    AP_GROUPINFO("ET_REV_S", 22, ParametersG3, et_rev_s, 1800),
++    // @Param: ET_THR
++    // @DisplayName: Endurance throttle, percent of the CAPPED range (100 = ET_PWM_MAX). 0 = not set, test refuses to start
++    // @Range: 0 100
++    AP_GROUPINFO("ET_THR", 23, ParametersG3, et_thr, 0),
++    // @Param: ET_REV_THR
++    // @DisplayName: Endurance reverse throttle, percent of the CAPPED reverse range (mirror of ET_PWM_START..ET_PWM_MAX around trim). Default 80
++    // @Range: 0 100
++    AP_GROUPINFO("ET_REV_THR", 24, ParametersG3, et_rev_thr, 80),
++    // @Param: ET_BRST_INT
++    // @DisplayName: Burst block every N seconds of cumulative motor-on time. 0 = no bursts
++    // @Units: s
++    AP_GROUPINFO("ET_BRST_INT", 25, ParametersG3, et_brst_int, 14400),
++    // @Param: ET_BRST_ON
++    // @Units: s
++    AP_GROUPINFO("ET_BRST_ON", 26, ParametersG3, et_brst_on, 10),
++    // @Param: ET_BRST_OFF
++    // @Units: s
++    AP_GROUPINFO("ET_BRST_OFF", 27, ParametersG3, et_brst_off, 5),
++    // @Param: ET_BRST_N
++    AP_GROUPINFO("ET_BRST_N", 28, ParametersG3, et_brst_n, 50),
++    // @Param: ET_DAY_S
++    // @DisplayName: Active wall time before the daily rest. 0 = no daily rest
++    // @Units: s
++    AP_GROUPINFO("ET_DAY_S", 29, ParametersG3, et_day_s, 79200),
++    // @Param: ET_REST_S
++    // @Units: s
++    AP_GROUPINFO("ET_REST_S", 30, ParametersG3, et_rest_s, 7200),
++    // @Param: ET_RAMP
++    // @DisplayName: Throttle ramp rate, percent per second (soft start/stop)
++    AP_GROUPINFO("ET_RAMP", 31, ParametersG3, et_ramp, 50),
++    // @Param: ET_MOT
++    // @DisplayName: Motors under test bitmask
++    // @Values: 1:Left,2:Right,3:Both
++    AP_GROUPINFO("ET_MOT", 32, ParametersG3, et_mot, 3),
++    // @Param: ET_RT_TMO
++    // @DisplayName: Realtime mode link timeout. Motors stop if no App command within this time
++    // @Units: ms
++    AP_GROUPINFO("ET_RT_TMO", 33, ParametersG3, et_rt_tmo, 1000),
++    // @Param: ET_IMAX
++    // @DisplayName: Stop test if battery current above this for 2s. 0 = disabled
++    // @Units: A
++    AP_GROUPINFO("ET_IMAX", 34, ParametersG3, et_imax, 15),
++    // @Param: ET_VMIN
++    // @DisplayName: Stop test if battery voltage below this for 3s. 0 = disabled
++    // @Units: V
++    AP_GROUPINFO("ET_VMIN", 35, ParametersG3, et_vmin, 10.5f),
++    // @Param: ET_TOTAL_H
++    // @DisplayName: Stop test after this many hours of cumulative motor-on time. 0 = unlimited
++    // @Units: h
++    AP_GROUPINFO("ET_TOTAL_H", 36, ParametersG3, et_total_h, 0),
++    // @Param: ET_CUM_S
++    // @DisplayName: Cumulative motor-on seconds (saved every 10 min, survives reboot)
++    // @Units: s
++    AP_GROUPINFO("ET_CUM_S", 37, ParametersG3, et_cum_s, 0),
++    // @Param: ET_PWM_MAX
++    // @DisplayName: Hard PWM cap (open-loop rpm limit, no rpm feedback). 1773us ~= 6000 rpm by linear interpolation of the Rogue R12 tank table @12.3V (1770=5900, 1780=6100-6300). Reverse cap mirrors it around trim
++    // @Units: PWM
++    // @Range: 1550 1900
++    AP_GROUPINFO("ET_PWM_MAX", 38, ParametersG3, et_pwm_max, 1773),
++    // @Param: ET_PWM_START
++    // @DisplayName: PWM where the ESC starts turning forward (= SERVO_TRIM + SERVO_DEAD = 1550 in production). 1% maps just above this
++    // @Units: PWM
++    AP_GROUPINFO("ET_PWM_START", 39, ParametersG3, et_pwm_start, 1550),
++    // @Param: ET_APP_CH
++    // @DisplayName: Endurance test: MAVLink channels allowed to enter/leave/command ENDU (bitmask). bit0 = chan0 (USB, any sysid), bit1 = chan1 (remote relay, only sysid ET_APP_SYSID). Default 3. The remote itself (sysid 255) is locked out; disarm from anywhere is always allowed.
++    // @Bitmask: 0:Chan0(USB),1:Chan1(IO/remote),2:Chan2
++    AP_GROUPINFO("ET_APP_CH", 40, ParametersG3, et_app_ch, 3),
++    // @Param: ET_APP_SYSID
++    // @DisplayName: Endurance test: MAVLink system id of the App on relayed links (chan 1 = remote/IO link). Messages on chan 1 with any other sysid (the remote uses 255) cannot control ENDU. Chan 0 (USB) accepts any sysid.
++    // @Range: 1 254
++    AP_GROUPINFO("ET_APP_SYSID", 41, ParametersG3, et_app_sysid, 200),
++
+     AP_GROUPEND
+ };
+ 
+diff --git a/Rover/Parameters.h b/Rover/Parameters.h
+index ea444e69cd..7633beecb6 100644
+--- a/Rover/Parameters.h
++++ b/Rover/Parameters.h
+@@ -445,6 +445,21 @@ public:
+     AP_Int8  led_strip_en;       // 自动驾驶灯效开关 (0=off,1=on)
+     AP_Int32 led_strip_color;    // 自动驾驶颜色 RGB24 (default 0x00FFFF)
+ 
++    // TEST-ONLY: motor endurance test (ModeEndurance)
++    AP_Int32 et_fwd_s, et_stop_s, et_rev_s;
++    AP_Float et_thr, et_rev_thr;
++    AP_Int32 et_brst_int;
++    AP_Int16 et_brst_on, et_brst_off, et_brst_n;
++    AP_Int32 et_day_s, et_rest_s;
++    AP_Float et_ramp;
++    AP_Int8  et_mot;
++    AP_Int16 et_rt_tmo;
++    AP_Float et_imax, et_vmin, et_total_h;
++    AP_Int32 et_cum_s;
++    AP_Int16 et_pwm_max, et_pwm_start;
++    AP_Int8  et_app_ch;
++    AP_Int16 et_app_sysid; // v0.3: MAVLink sysid of the App when it comes through the remote (SERIAL1); remote itself is 255   // v0.3: bitmask of MAVLink channels allowed to control ENDU (bit0 = chan0 = USB/SERIAL0)
++
+ };
+ 
+ extern const AP_Param::Info var_info[];
+diff --git a/Rover/Rover.cpp b/Rover/Rover.cpp
+index ae285c3f4b..feefa11e0e 100644
+--- a/Rover/Rover.cpp
++++ b/Rover/Rover.cpp
+@@ -423,6 +423,8 @@ void Rover::check_ble_ota(void)
+  */
+ void Rover::one_second_loop(void)
+ {
++    // TEST-ONLY: endurance test 1Hz telemetry/log
++    mode_endurance.send_status();
+     // allow orientation change at runtime to aid config
+     ahrs.update_orientation();
+ 
+diff --git a/Rover/Rover.h b/Rover/Rover.h
+index eb22eaf07b..5fd2cdd80b 100644
+--- a/Rover/Rover.h
++++ b/Rover/Rover.h
+@@ -115,6 +115,7 @@ public:
+     friend class ModeSmartRTL;
+     friend class ModeFollow;
+     friend class ModeSimple;
++    friend class ModeEndurance;
+ 
+     friend class RC_Channel_Rover;
+     friend class RC_Channels_Rover;
+@@ -258,6 +259,7 @@ private:
+     ModeSmartRTL mode_smartrtl;
+     ModeFollow mode_follow;
+     ModeSimple mode_simple;
++    ModeEndurance mode_endurance;   // TEST-ONLY
+ 
+     // cruise throttle and speed learning
+     typedef struct {
+diff --git a/Rover/Steering.cpp b/Rover/Steering.cpp
+index 139da6cd6b..2a1d3ea6cb 100644
+--- a/Rover/Steering.cpp
++++ b/Rover/Steering.cpp
+@@ -9,6 +9,9 @@ void Rover::set_servos(void)
+     // send output signals to motors
+     if (motor_test) {
+         motor_test_output();
++    } else if (control_mode == &mode_endurance && arming.is_armed()) {
++        // TEST-ONLY: endurance test drives the two throttles directly
++        mode_endurance.output_motors();
+     } else {
+         // get ground speed
+         float speed;
+diff --git a/Rover/failsafe.cpp b/Rover/failsafe.cpp
+index b509868822..3619a50129 100644
+--- a/Rover/failsafe.cpp
++++ b/Rover/failsafe.cpp
+@@ -67,6 +67,7 @@ void Rover::failsafe_trigger(uint8_t failsafe_type, const char* type_str, bool o
+         (failsafe.bits != 0) &&
+         (millis() - failsafe.start_time > g.fs_timeout * 1000) &&
+         (control_mode != &mode_rtl) &&
++        (control_mode != &mode_endurance) &&   // TEST-ONLY: ENDU handles its own link safety
+         ((control_mode != &mode_hold || (g2.fs_options & (uint32_t)Failsafe_Options::Failsafe_Option_Active_In_Hold)))) {
+         failsafe.triggered = failsafe.bits;
+         gcs().send_text(MAV_SEVERITY_WARNING, "%s Failsafe", type_str);
+@@ -109,6 +110,12 @@ void Rover::failsafe_trigger(uint8_t failsafe_type, const char* type_str, bool o
+ 
+ void Rover::handle_battery_failsafe(const char* type_str, const int8_t action)
+ {
++    // TEST-ONLY: the endurance test runs on a 12V bench PSU. Capacity (mAh) and pack-voltage
++    // failsafes do not apply; ModeEndurance stops on its own ET_VMIN / ET_IMAX limits instead.
++    if (control_mode == &mode_endurance) {
++        gcs().send_text(MAV_SEVERITY_WARNING, "ENDU: %s battery failsafe ignored (PSU test, ET_VMIN active)", type_str);
++        return;
++    }
+         switch ((Failsafe_Action)action) {
+             case Failsafe_Action_None:
+                 break;
+diff --git a/Rover/mode.cpp b/Rover/mode.cpp
+index accd4c5095..b6f9663c8f 100644
+--- a/Rover/mode.cpp
++++ b/Rover/mode.cpp
+@@ -550,6 +550,9 @@ Mode *Rover::mode_from_mode_num(const enum Mode::Number num)
+     case Mode::Number::INITIALISING:
+         ret = &mode_initializing;
+         break;
++    case Mode::Number::ENDURANCE:
++        ret = &mode_endurance;
++        break;
+     default:
+         break;
+     }
+diff --git a/Rover/mode.h b/Rover/mode.h
+index cd5a3773b3..fe6cd38500 100644
+--- a/Rover/mode.h
++++ b/Rover/mode.h
+@@ -30,6 +30,7 @@ public:
+         RTL          = 11,
+         SMART_RTL    = 12,
+         GUIDED       = 15,
++        ENDURANCE    = 30,   // TEST-ONLY: motor endurance bench test
+         INITIALISING = 16
+     };
+ 
+@@ -772,3 +773,74 @@ private:
+     float _desired_heading_cd;  // latest desired heading (in centi-degrees) from pilot
+ };
+ 
++// ---------------------------------------------------------------------------
++// TEST-ONLY build: motor endurance bench/tank test mode (not for production)
++//   Mode 1 (AUTO)    : firmware runs the configured cycle on its own (ET_* params),
++//                      the phone may disconnect at any time.
++//   Mode 2 (REALTIME): the App sends live throttle commands (MAV_CMD_USER_2);
++//                      motors stop if no command arrives within ET_RT_TMO ms.
++// ---------------------------------------------------------------------------
++class ModeEndurance : public Mode
++{
++public:
++    enum class State : uint8_t { IDLE=0, AUTO_RUN=1, AUTO_PAUSED=2, REALTIME=3, RT_LINK_LOST=4, DONE=5, FAULT=6 };
++    enum class Phase : uint8_t { NONE=0, FWD=1, STOP1=2, REV=3, STOP2=4, BURST_ON=5, BURST_OFF=6, DAILY_REST=7 };
++
++    uint32_t mode_number() const override { return ENDURANCE; }
++    const char *name4() const override { return "ENDU"; }
++    void update() override;
++    bool attitude_stabilized() const override { return false; }
++    bool requires_position() const override { return false; }
++    bool requires_velocity() const override { return false; }
++
++    // App commands (MAV_CMD_USER_1 / MAV_CMD_USER_2)
++    MAV_RESULT handle_control(uint8_t action, bool reset_counters);
++    MAV_RESULT handle_realtime(float left_pct, float right_pct, float hold_ms);
++
++    // called from Rover::set_servos() instead of the normal mixer when active
++    void output_motors();
++    bool active() const;
++    void send_status();   // 1Hz named-value telemetry + ETST log
++    uint16_t pct_to_pwm(float pct, uint16_t trim) const;
++
++    // v0.3 source gating: only the App link may enter / leave / command the test
++    void set_msg_src(int8_t c, uint8_t sysid) { _msg_chan = c; _msg_sysid = sysid; }
++    bool from_app() const;
++    bool allow_mode_change(const Mode &new_mode, ModeReason reason);
++    void deny_text(const char *what);
++
++protected:
++    bool _enter() override;
++    void _exit() override;
++
++private:
++    void auto_step(uint32_t dt_ms);
++    void next_phase();
++    void start_phase(Phase p, uint32_t duration_ms, float target_pct);
++    void fault(const char *why);
++    void safety_checks(uint32_t dt_ms);
++
++    State    _state = State::IDLE;
++    int8_t   _msg_chan = -1;
++    uint8_t  _msg_sysid;       // MAVLink channel of the message being handled (-1 = not from MAVLink)
++    uint32_t _deny_text_ms;
++    Phase    _phase = Phase::NONE;
++    uint32_t _last_ms;
++    uint32_t _phase_elapsed_ms;
++    uint32_t _phase_dur_ms;
++    float    _target_pct;        // signed: + forward, - reverse
++    float    _out_l, _out_r;     // ramped output, percent
++    float    _rt_l, _rt_r;       // realtime targets
++    uint32_t _rt_last_ms;
++    uint32_t _rt_hold_ms;
++    uint32_t _cycles;            // completed FWD/REV cycles
++    uint16_t _burst_done;
++    uint32_t _bursts;            // completed burst blocks
++    uint64_t _cum_run_ms;        // motor-on time
++    uint64_t _since_burst_ms;    // motor-on time since last burst block
++    uint64_t _active_ms;         // wall time since start / last daily rest
++    uint32_t _last_save_ms;
++    uint32_t _vlow_ms, _ihigh_ms;
++    uint16_t _pwm_l = 1500, _pwm_r = 1500;
++};
++
+diff --git a/Rover/system.cpp b/Rover/system.cpp
+index 4babbffa4d..c028f657bd 100644
+--- a/Rover/system.cpp
++++ b/Rover/system.cpp
+@@ -240,6 +240,11 @@ bool Rover::set_mode(Mode &new_mode, ModeReason reason)
+         return true;
+     }
+ 
++    // TEST-ONLY (ENDU v0.3): only the App may enter or leave the endurance test mode
++    if (!mode_endurance.allow_mode_change(new_mode, reason)) {
++        return false;
++    }
++
+     Mode &old_mode = *control_mode;
+     if (!new_mode.enter()) {
+         // Log error that we failed to enter desired flight mode
+diff --git a/Rover/version.h b/Rover/version.h
+index 7cbbaeb009..b2cb71bc00 100644
+--- a/Rover/version.h
++++ b/Rover/version.h
+@@ -6,7 +6,7 @@
+ 
+ #include "ap_version.h"
+ 
+-#define THISFIRMWARE "ArduRover V4.2.3"
++#define THISFIRMWARE "ArduRover V4.2.3 ENDU-TEST v0.3"
+ 
+ // the following line is parsed by the autotest scripts
+ #define FIRMWARE_VERSION 4,2,3,FIRMWARE_VERSION_TYPE_OFFICIAL

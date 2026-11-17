@@ -1,0 +1,5 @@
+/build-artifacts/
+/scripts/__pycache__/
+/scripts/tests/__pycache__/
+/2_remote_test/rc_endu_test/Output/
+/2_remote_test/rc_endu_test/Projects/MDK-ARM/*.ci.uvprojx
