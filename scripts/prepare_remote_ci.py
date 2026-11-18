@@ -1,6 +1,7 @@
 """Prepare a disposable Keil project without rewriting firmware source files."""
 
 from pathlib import Path
+import os
 import re
 import xml.etree.ElementTree as ET
 
@@ -44,8 +45,11 @@ def prepare(repo: Path) -> Path:
     compiler = target.find("pCCUsed")
     if compiler is None:
         raise RuntimeError("Missing compiler selection")
-    print(f"CI compatibility compiler: {compiler.text} -> ARMCC 5.06 update 6 build 750")
-    compiler.text = "5060750::V5.06 update 6 (build 750)::ARMCC"
+    selected = os.environ.get("KEIL_ARMCC_TAG", "5060750::V5.06 update 6 (build 750)::ARMCC")
+    if not re.fullmatch(r"506\d{4}::V5\.06 update \d+ \(build \d+\)::ARMCC", selected):
+        raise RuntimeError("Invalid detected ARM Compiler 5.06 selection")
+    print(f"CI compiler: {compiler.text} -> {selected}")
+    compiler.text = selected
 
     common = target.find("./TargetOption/TargetCommonOption")
     if common is None:

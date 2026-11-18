@@ -108,12 +108,15 @@ can_push=$(gh_retry api "repos/$repo" --jq '.permissions.push // false')
 [ "$branch" = "$default_branch" ] || fail "请先切换到默认分支 $default_branch；首次启用手动 workflow 需要上传到默认分支。"
 git diff --cached --quiet || fail '暂存区已有其他修改。请先处理已有暂存内容，避免混入本次提交。'
 
-for required in .github/workflows/remote-keil-test.yml scripts/prepare_remote_ci.py scripts/keil_ci.py 2_remote_test/rc_endu_test/Projects/MDK-ARM/CatchXBlack_Pro.uvprojx; do
+for required in .github/workflows/remote-keil-test.yml scripts/prepare_remote_ci.py scripts/keil_ci.py scripts/keil_existing.py 2_remote_test/rc_endu_test/Projects/MDK-ARM/CatchXBlack_Pro.uvprojx; do
   [ -f "$required" ] || fail "缺少文件：$required"
 done
 
 echo "GitHub 仓库：$repo"
 echo "上传分支：$branch"
+runner_status=$(gh_retry api "repos/$repo/actions/runners" --jq '.runners[] | select(.name == "PAILIKEN") | .status')
+[ "$runner_status" = online ] || fail '自托管 runner PAILIKEN 尚未在线，请在 Windows 上启动 actions-runner 的 run.cmd 后重试。'
+echo '目标 Windows runner：PAILIKEN（online），使用电脑已有的 Keil 环境。'
 echo '将提交编译配置、操作说明、一键脚本和遥控器源码目录中的修改。'
 if [ "$CHECK_ONLY" -eq 1 ]; then
   echo '检查通过。未提交、上传或启动编译。'
@@ -128,7 +131,7 @@ push_url="$repo_url.git"
 github_git fetch "$push_url" "$branch"
 git merge-base --is-ancestor FETCH_HEAD HEAD || fail '远端有本地尚未包含的提交，请先执行 git pull --ff-only 后重试。'
 
-git add -- .gitignore .github/workflows/remote-keil-test.yml scripts/prepare_remote_ci.py scripts/keil_ci.py scripts/tests/ \
+git add -- .gitignore .github/workflows/remote-keil-test.yml scripts/prepare_remote_ci.py scripts/keil_ci.py scripts/keil_existing.py scripts/tests/ \
   2_remote_test/GITHUB_BUILD.md 2_remote_test/rc_endu_test 'build.command'
 if ! git diff --cached --quiet; then
   git commit -m 'Add one-click GitHub build test for remote firmware'
@@ -177,7 +180,7 @@ fi
 output="$ROOT/build-artifacts/remote/$run_id"
 mkdir -p "$output"
 printf '%s\n' "$run_url" > "$output/run-url.txt"
-echo '等待云端编译完成，下载和安装工具链可能需要较长时间…'
+echo '等待自托管 Windows 电脑编译完成；请保持 PAILIKEN 开机且 runner 正在运行…'
 last_state=''
 completed=0
 query_failures=0

@@ -14,19 +14,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2022
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 35
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
-      KEIL_ROOT: C:\Keil_v5
+      KEIL_USE_EXISTING: "1"
+      KEIL_INSTALL_DIR: ${{ vars.KEIL_ROOT }}
       REMOTE_ROOT: 2_remote_test/rc_endu_test
-      CMSIS_PACK_ROOT: C:\Keil_v5\ARM\PACK
-      KEIL_LICENSE_SERVER: ${{ secrets.KEIL_LICENSE_SERVER }}
-      KEIL_LICENSE_VARIANT: ${{ vars.KEIL_LICENSE_VARIANT || 'mdk_pro' }}
 
     steps:
       - name: Check out source
@@ -34,22 +32,33 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare isolated CI project
+      - name: Check self-hosted runner prerequisites
         run: |
+          Write-Host "Runner: $env:RUNNER_NAME"
+          if ($env:RUNNER_NAME -ne 'PAILIKEN') { throw 'This workflow expects the PAILIKEN runner.' }
+          [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+          $OutputEncoding = [Console]::OutputEncoding
+          Get-Command git -ErrorAction Stop | Out-Null
+          Get-Command python -ErrorAction Stop | Out-Null
+          python -c "import sys; print(sys.version); assert sys.version_info >= (3, 10), 'Python 3.10+ required'"
+          if ($LASTEXITCODE -ne 0) { throw 'Install Python 3.10+ on PAILIKEN and add it to PATH, then restart the runner.' }
           New-Item -ItemType Directory -Force ci-logs | Out-Null
-          python scripts/prepare_remote_ci.py 2>&1 | Tee-Object ci-logs/prepare.log
-          if ($LASTEXITCODE -ne 0) { throw 'CI project preparation failed.' }
 
       - name: Check CI deployment and timeout helpers
         run: |
-          python -B -m unittest discover -s scripts/tests -v 2>&1 | Tee-Object ci-logs/helper-tests.log
+          python -B -c "import sys, unittest; suite = unittest.defaultTestLoader.discover('scripts/tests'); result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite); sys.exit(not result.wasSuccessful())" | Tee-Object ci-logs/helper-tests.log
           if ($LASTEXITCODE -ne 0) { throw 'CI helper regression tests failed.' }
 
-      - name: Deploy Keil tools without GUI installer
-        timeout-minutes: 20
+      - name: Inspect existing Keil and verify its license
+        timeout-minutes: 5
         run: |
-          python -u scripts/keil_ci.py setup
-          if ($LASTEXITCODE -ne 0) { throw 'Keil deployment failed; inspect ci-logs/setup.log and compiler-probe.log.' }
+          python -u scripts/keil_existing.py | Tee-Object ci-logs/existing-keil-check.log
+          if ($LASTEXITCODE -ne 0) { throw 'Existing Keil check failed. Inspect existing-keil-check.log and license-probe-link.log.' }
+
+      - name: Prepare project for detected ARM Compiler 5
+        run: |
+          python scripts/prepare_remote_ci.py | Tee-Object ci-logs/prepare.log
+          if ($LASTEXITCODE -ne 0) { throw 'CI project preparation failed.' }
 
       - name: Rebuild firmware with bounded process monitoring
         timeout-minutes: 10
@@ -93,11 +102,11 @@ jobs:
         run: |
           @'
           ### Remote firmware build test
-          - Tools are extracted from the official, SHA256-verified archive; no GUI installer is launched.
-          - Compatibility build: Keil MDK 5.25 / ARM Compiler 5.06 update 6 build 750.
-          - Original project requests update 5 build 528; this is not an exact-toolchain reproduction.
-          - Uses KEIL_LICENSE_SERVER if configured; otherwise MDK-Lite evaluation limits apply.
-          - Download `remote-keil-diagnostics` on failure; inspect setup.log or keil-build.log.
+          - Runs on the existing PAILIKEN Windows self-hosted runner.
+          - No tool downloads, installation, registry writes or license configuration changes.
+          - Compiler version and paths are detected from the existing installation; see existing-keil.json.
+          - The existing license must pass a link probe larger than 32 KiB before compiling firmware.
+          - Download `remote-keil-diagnostics` on failure; inspect existing-keil-check.log, license-probe-link.log or keil-build.log.
           - `remote-firmware-app` is uploaded only after a successful build and BIN validation.
           - Application BIN base: 0x08010000. Bootloader is not included.
           - This build has not been validated on a remote controller.

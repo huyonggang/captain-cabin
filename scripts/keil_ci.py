@@ -1,7 +1,8 @@
-"""Deploy the vendor's evaluation tools without launching its GUI installer.
+"""Shared Keil CI build, logging and legacy deployment helpers.
 
 Windows performs the actual build. Archive/configuration and watchdog helpers
-can also be checked on macOS. No activation keys or license patches are used.
+can also be checked on macOS. The self-hosted workflow does not call setup().
+No activation keys or license patches are used.
 """
 
 import argparse
@@ -85,6 +86,11 @@ def redact_text(text, server=None):
         for value in (server, server.partition("@")[2]):
             if value:
                 text = text.replace(value, "[REDACTED_LICENSE_SERVER]")
+    if os.environ.get("KEIL_REDACTIONS_FILE"):
+        values = json.loads(Path(os.environ["KEIL_REDACTIONS_FILE"]).read_text(encoding="utf-8"))
+        for value in sorted(set(values), key=len, reverse=True):
+            if value:
+                text = text.replace(value, "[REDACTED_LICENSE_DETAIL]")
     return text
 
 
@@ -329,6 +335,14 @@ def explain_build_failure(text):
     return None
 
 
+def save_failure(failure, logs):
+    (logs / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8")
+    (logs / "failure.txt").write_text(failure["reason_zh"] + "\n" + failure["solution_zh"] + "\n", encoding="utf-8")
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+            summary.write("\n### Build failure reason\n" + failure["message"] + "\n")
+
+
 def build(keil, root, logs):
     project_dir = root / "Projects/MDK-ARM"
     build_log = logs / "keil-build.log"
@@ -342,11 +356,7 @@ def build(keil, root, logs):
     except RuntimeError:
         failure = explain_build_failure(build_log.read_text(errors="replace") if build_log.exists() else "")
         if failure:
-            (logs / "failure.json").write_text(json.dumps(failure, ensure_ascii=False, indent=2), encoding="utf-8")
-            (logs / "failure.txt").write_text(failure["reason_zh"] + "\n" + failure["solution_zh"] + "\n", encoding="utf-8")
-            if os.environ.get("GITHUB_STEP_SUMMARY"):
-                with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
-                    summary.write("\n### Build failure reason\n" + failure["message"] + "\n")
+            save_failure(failure, logs)
             raise RuntimeError(failure["message"]) from None
         raise
     (logs / "build-result.txt").write_text(f"UV4 exit code: {code}\n")
@@ -354,7 +364,8 @@ def build(keil, root, logs):
     if not axf.is_file():
         raise RuntimeError("Keil returned without producing the application AXF")
     binary = root / "Output/BIN/Remote_V1.01.42_ENDU_TEST_app_0x08010000.bin"
-    run_logged([keil / "ARM/ARMCC/bin/fromelf.exe", "--bin", "--output", binary, axf],
+    compiler_bin = Path(os.environ.get("KEIL_COMPILER_BIN", str(keil / "ARM/ARMCC/bin")))
+    run_logged([compiler_bin / "fromelf.exe", "--bin", "--output", binary, axf],
                logs / "fromelf.log", timeout=30)
     validate_bin(binary)
     (logs / "firmware-sha256.txt").write_text(f"{sha256(binary)}  {binary.name}\n")
@@ -388,7 +399,7 @@ def main():
         sys.stdout = Tee(original, stream)
         try:
             server = os.environ.get("KEIL_LICENSE_SERVER", "").strip()
-            if server:
+            if server and os.environ.get("KEIL_USE_EXISTING") != "1":
                 settings = license_settings(server, os.environ.get("KEIL_LICENSE_VARIANT", "mdk_pro").strip())
                 os.environ["ARMLMD_LICENSE_FILE"] = server
                 os.environ["ARM_TOOL_VARIANT"] = settings["TOOL_VARIANT"]

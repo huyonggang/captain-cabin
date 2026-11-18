@@ -39,6 +39,7 @@ class KeilCITests(unittest.TestCase):
                 "L6050U: The code size of this image (237820 bytes) exceeds the maximum allowed"
             )
             with patch.object(ci, "run_logged", side_effect=RuntimeError("exit code 2")), \
+                    patch.dict(ci.os.environ, {"GITHUB_STEP_SUMMARY": str(Path(temp) / "summary.md")}), \
                     self.assertRaisesRegex(RuntimeError, "Keil L6050U"):
                 ci.build(Path(temp), Path(temp), logs)
             failure = json.loads((logs / "failure.json").read_text(encoding="utf-8"))
